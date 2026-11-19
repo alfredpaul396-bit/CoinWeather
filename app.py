@@ -7,6 +7,7 @@ Needs prices.csv (columns: date, BTC, ETH, SOL, ...) in the same folder.
 """
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,8 @@ STABLECOIN = "USDC"
 STABLE_SHIFT = 0.20           # summary suggestion: move 20% of the portfolio into the stablecoin
 VAR_LEVELS = (0.95, 0.99)     # Value at Risk confidence levels
 DEFAULT_TOTAL = 10_000.0      # EUR, used when the user enters percentages
+LIVE_REFRESH_SECONDS = 15 * 60   # live prices are re-downloaded at most every 15 minutes
+LIVE_HISTORY = "2y"              # how much daily history to download
 
 # Each risk level gets a weather word so beginners read it at a glance
 FORECAST = {
@@ -158,6 +161,27 @@ def load_prices(path: str) -> pd.DataFrame:
     return df.dropna()
 
 
+@st.cache_data(ttl=LIVE_REFRESH_SECONDS, show_spinner="Getting the latest prices...")
+def load_live_prices(coins: tuple) -> tuple:
+    """Daily closing prices from Yahoo Finance. The last row is today's price so far."""
+    import yfinance as yf
+    tickers = {f"{c}-USD": c for c in coins}
+    raw = yf.download(list(tickers), period=LIVE_HISTORY, interval="1d", auto_adjust=True,
+                      progress=False, threads=False)
+    close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
+    close = close.rename(columns=tickers)
+    missing = [c for c in coins if c not in close.columns]
+    if missing:
+        raise ValueError(f"No live data for {missing}")
+    close = close[list(coins)].apply(pd.to_numeric, errors="coerce").ffill(limit=3).dropna()
+    close.index = pd.to_datetime(close.index).tz_localize(None).normalize()
+    close.index.name = "date"
+    close = close[~close.index.duplicated(keep="last")]
+    if len(close) < 300:
+        raise ValueError(f"Only {len(close)} days of live data")
+    return close, datetime.now(timezone.utc)
+
+
 def portfolio_returns(returns: pd.DataFrame, weights: pd.Series) -> pd.Series:
     """Daily portfolio return, assuming the weights are kept constant (daily rebalancing)."""
     return returns[weights.index].mul(weights, axis=1).sum(axis=1)
@@ -284,10 +308,17 @@ if not DATA_FILE.exists():
     st.error("prices.csv is missing. Put it in the same folder as app.py, then reload the page.")
     st.stop()
 
-prices = load_prices(str(DATA_FILE))
-if len(prices) < 30 or prices.shape[1] < 1:
+saved_prices = load_prices(str(DATA_FILE))
+if len(saved_prices) < 30 or saved_prices.shape[1] < 1:
     st.error("prices.csv needs at least 30 days of prices and one coin column. Check the file, then reload.")
     st.stop()
+
+# Live prices first; the saved file is the backup so the app never breaks
+try:
+    prices, fetched_at = load_live_prices(tuple(saved_prices.columns))
+    live = True
+except Exception:
+    prices, fetched_at, live = saved_prices, None, False
 
 all_coins = list(prices.columns)
 for i, c in enumerate(c for c in all_coins if c not in COIN_COLORS):
@@ -340,7 +371,16 @@ with st.sidebar:
         total_input = st.number_input("Total portfolio value (EUR)", min_value=0.0, value=DEFAULT_TOTAL, step=500.0,
                                       help="Turns your percentages into euro amounts for the loss estimates.")
 
-    st.caption(f"Prices from {data_start:%d %b %Y} to {data_end:%d %b %Y} ({len(prices)} days).")
+    st.markdown("### Price data")
+    if live:
+        st.success(f"🟢 Live prices from Yahoo Finance, updated {fetched_at:%H:%M} UTC.")
+    else:
+        st.warning("🟠 Live prices are unavailable right now, so the saved prices.csv is used.")
+    if st.button("Refresh prices", help="Download the latest prices now."):
+        load_live_prices.clear()
+        st.rerun()
+    st.caption(f"Daily prices from {data_start:%d %b %Y} to {data_end:%d %b %Y} ({len(prices)} days). "
+               + ("Today's row is the latest price so far." if live else ""))
 
 # ----------------------------------------------------------------------------
 # Header
@@ -585,7 +625,11 @@ with tab_details:
         "Last price (USD)": st.column_config.NumberColumn(format="dollar"),
         "1-day change": st.column_config.NumberColumn(format="percent"),
     })
-    st.caption(f"Data until {data_end:%d %b %Y}, from the saved prices.csv file, so the app works offline.")
+    if live:
+        st.caption(f"Live from Yahoo Finance, updated {fetched_at:%d %b %Y %H:%M} UTC. Prices refresh every "
+                   f"{LIVE_REFRESH_SECONDS // 60} minutes, or use Refresh prices in the sidebar.")
+    else:
+        st.caption(f"Saved prices.csv, data until {data_end:%d %b %Y}. Live prices could not be reached.")
 
     st.markdown("#### How the numbers are calculated")
     st.markdown(
@@ -597,7 +641,7 @@ with tab_details:
 - **Moves together** = pairwise correlation of daily returns of {CORR_LIMIT:.2f} or more.
 - **Forecast / risk score** = ☀️ Calm (Low) below {LOW_VOL:.0%}, 🌦️ Choppy (Medium) {LOW_VOL:.0%} to {HIGH_VOL:.0%}, ⛈️ Stormy (High) above {HIGH_VOL:.0%}.
 - **Value at Risk (historical)** = the 5th and 1st percentile of past daily portfolio returns.
-- **Data period**: {data_start:%d %b %Y} to {data_end:%d %b %Y}.
+- **Data period**: {data_start:%d %b %Y} to {data_end:%d %b %Y} ({"live daily closing prices from Yahoo Finance" if live else "saved prices.csv"}).
 """
     )
 
@@ -611,6 +655,9 @@ with tab_details:
     csv_text = summary_rows.to_csv(index=False) + "\n" + report.round(4).to_csv(index_label="Coin")
     st.download_button("Download my risk report (CSV)", csv_text,
                        file_name="coinweather_risk_report.csv", mime="text/csv")
+    st.download_button("Download the price data (CSV)", prices.to_csv(float_format="%.6f"),
+                       file_name="prices.csv", mime="text/csv",
+                       help="The daily prices used above. Upload it to GitHub to update the backup file.")
 
 html(f"""
 <div class="cw-foot">⚠️ {APP_NAME} is an educational tool, not financial advice. Results use past prices, which do not predict the future.
