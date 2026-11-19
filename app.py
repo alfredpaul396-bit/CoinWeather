@@ -97,7 +97,7 @@ h1, h2, h3 {{ color: {INK}; letter-spacing: -0.01em; }}
 .cw-marker::after {{ content:""; display:block; width:3px; height:30px; background:{INK}; margin:2px auto 0; border-radius:2px; }}
 .cw-scale {{ display:flex; justify-content:space-between; color:{MUTED}; font-size:.8rem; margin-top:.45rem; }}
 
-.cw-tiles {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap:.9rem; margin-bottom:1.2rem; }}
+.cw-tiles {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:.9rem; margin-bottom:1.2rem; }}
 .cw-tile {{ background:{SURFACE}; border:1px solid {LINE}; border-radius:14px; padding:1rem 1.1rem; }}
 .cw-tile .label {{ color:{MUTED}; font-size:.88rem; font-weight:600; }}
 .cw-tile .value {{ font-size:1.9rem; font-weight:800; color:{INK}; letter-spacing:-0.02em; margin:.15rem 0; }}
@@ -110,6 +110,7 @@ h1, h2, h3 {{ color: {INK}; letter-spacing: -0.01em; }}
 .stTabs [data-baseweb="tab-list"] {{ gap:.4rem; border-bottom:1px solid {LINE}; }}
 .stTabs [data-baseweb="tab"] {{ font-weight:600; padding:.55rem 1rem; border-radius:10px 10px 0 0; }}
 .stTabs [aria-selected="true"] {{ color:{ACCENT}; }}
+div[data-testid="stMetricValue"] {{ font-size:1.75rem; }}
 div[data-testid="stMetric"] {{ background:{SURFACE}; border:1px solid {LINE}; border-radius:14px; padding:.8rem 1rem; }}
 .stDownloadButton button {{ background:{ACCENT}; color:white; border:none; border-radius:10px; font-weight:700; padding:.55rem 1.1rem; }}
 .stDownloadButton button:hover {{ background:#184f95; color:white; }}
@@ -452,7 +453,7 @@ with tab_overview:
         fig_pie = go.Figure(go.Pie(
             labels=list(amounts.index), values=amounts.values, hole=0.58, sort=False,
             marker=dict(colors=[COIN_COLORS[c] for c in amounts.index], line=dict(color="white", width=2)),
-            textinfo="label+percent", textposition="outside",
+            textinfo="label+percent", textposition="outside", automargin=True,
             hovertemplate="<b>%{label}</b><br>%{value:,.0f} EUR<br>%{percent}<extra></extra>",
         ))
         fig_pie.update_layout(showlegend=False,
@@ -526,7 +527,7 @@ with tab_safer:
         w1, w2, w3 = st.columns(3)
         w1.metric("Yearly swings", f"{nv:.0%}", f"{(nv - vol) * 100:+.0f} pts vs now", delta_color="inverse")
         w2.metric("Worst drop", pct0(nm), f"{(nm - mdd) * 100:+.0f} pts vs now", delta_color="normal")
-        w3.metric("Forecast", f"{nfc['icon']} {nfc['word']}", f"{risk_label(nv)} risk", delta_color="off")
+        w3.metric(f"Forecast ({risk_label(nv)} risk)", f"{nfc['icon']} {nfc['word']}")
         st.caption(f"The {shift_pct}% is taken proportionally from each coin you hold now. "
                    f"{STABLECOIN} would make up {new_w[STABLECOIN]:.0%} of the portfolio.")
         st.divider()
@@ -548,16 +549,17 @@ with tab_safer:
         k1, k2, k3 = st.columns(3)
         k1.metric("Yearly swings", f"{mv:.0%}", f"{(mv - vol) * 100:+.0f} pts vs now", delta_color="inverse")
         k2.metric("Worst drop", pct0(mm), f"{(mm - mdd) * 100:+.0f} pts vs now", delta_color="normal")
-        k3.metric("Forecast", f"{mfc['icon']} {mfc['word']}", f"{risk_label(mv)} risk", delta_color="off")
+        k3.metric(f"Forecast ({risk_label(mv)} risk)", f"{mfc['icon']} {mfc['word']}")
 
         table = pd.DataFrame({"Now": weights, "Suggested": mix}).fillna(0)
         table["Change (EUR)"] = (table["Suggested"] - table["Now"]) * total
+        table[["Now", "Suggested"]] = table[["Now", "Suggested"]] * 100
         table.index.name = "Coin"
         st.dataframe(
             table,
             column_config={
-                "Now": st.column_config.ProgressColumn("Now", format="percent", min_value=0, max_value=1),
-                "Suggested": st.column_config.ProgressColumn("Suggested", format="percent", min_value=0, max_value=1),
+                "Now": st.column_config.ProgressColumn("Now", format="%.0f%%", min_value=0, max_value=100),
+                "Suggested": st.column_config.ProgressColumn("Suggested", format="%.0f%%", min_value=0, max_value=100),
                 "Change (EUR)": st.column_config.NumberColumn("Change (EUR)", format="%+.0f €"),
             },
         )
@@ -568,9 +570,9 @@ with tab_safer:
 with tab_details:
     st.markdown("#### Value at Risk (1 day)")
     c1, c2 = st.columns(2)
-    c1.metric("95% VaR", f"{v95 * total:,.0f} EUR", f"{v95:.1%} of portfolio", delta_color="off",
+    c1.metric(f"95% VaR ({v95:.1%} of portfolio)", f"{v95 * total:,.0f} EUR",
               help="On 95% of past days, the one-day loss was smaller than this.")
-    c2.metric("99% VaR", f"{v99 * total:,.0f} EUR", f"{v99:.1%} of portfolio", delta_color="off",
+    c2.metric(f"99% VaR ({v99:.1%} of portfolio)", f"{v99 * total:,.0f} EUR",
               help="On 99% of past days, the one-day loss was smaller than this.")
     st.caption("Historical method, based on the worst past days in the data. A bad day can still be worse than this.")
 
@@ -580,7 +582,7 @@ with tab_details:
     latest = pd.DataFrame({"Last price (USD)": last, "1-day change": change}).loc[list(weights.index)]
     latest.index.name = "Coin"
     st.dataframe(latest, column_config={
-        "Last price (USD)": st.column_config.NumberColumn(format="$%.4f"),
+        "Last price (USD)": st.column_config.NumberColumn(format="dollar"),
         "1-day change": st.column_config.NumberColumn(format="percent"),
     })
     st.caption(f"Data until {data_end:%d %b %Y}, from the saved prices.csv file, so the app works offline.")
